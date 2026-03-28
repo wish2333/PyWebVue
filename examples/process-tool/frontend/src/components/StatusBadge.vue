@@ -3,6 +3,8 @@ import type { StatusState } from "@/types";
 
 defineProps<{
   status: StatusState;
+  elapsed?: number | null;
+  outputCount?: number | null;
 }>();
 
 const STATUS_MAP: Record<StatusState, { label: string; color: string }> = {

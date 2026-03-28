@@ -30,7 +30,7 @@ Python后端（ApiBase） <-- pywebview JS桥 --> Vue 3前端
 | `ApiBase` | `api_base.py` | 用户业务API基类 |
 | `ApiProxy` | `app.py` | 封装ApiBase并处理全局异常 |
 | `ProcessManager` | `process.py` | 子进程状态机（启动/暂停/恢复/停止/超时） |
-| `EventBus` | `event_bus.py` | 通过`evaluate_js`将Python事件派发至前端 |
+| `EventBus` | `event_bus.py` | 通过`run_js`将Python事件派发至前端 |
 | `Dialog` | `dialog.py` | 本地文件/文件夹/保存对话框 |
 | `Logger` | `logger.py` | 双通道日志（控制台 + 前端LogPanel） |
 | `Config` | `config.py` | YAML配置加载到数据类 |
@@ -55,10 +55,10 @@ main.py -> App(config="config.yaml") -> load_config()
 -> webview.create_window(js_api=ApiProxy(api_instance))
 -> webview.start()
 -> _on_window_loaded()
--> 注入BRIDGE_JS
+-> 通过run_js注入BRIDGE_JS（避免evaluate_js静默失败）
 -> window.pywebvue.event.on/off/dispatch
 -> _setup_drag_drop()
-# DOM事件处理程序
+# 通过run_js直接注入拖放处理器
 ```
 
 `ApiProxy`包裹每个公共方法调用。如果方法抛出未捕获异常，代理捕获并返回`Result.fail(ErrCode.INTERNAL_ERROR)`，而非将拒绝Promise传递给JavaScript。这意味着前端代码始终依赖`{ code, msg, data }`响应结构。
@@ -613,3 +613,60 @@ self.logger.opt(exception=True).error("详细错误并附带堆栈")
 3. **使用`self.logger.opt(exception=True).error(...)`** 获取详细错误上下文
 4. **检查浏览器DevTools** -- 调试模式启用右键>检查元素
 5. **API错误从不静默** -- `ApiProxy`捕获所有未捕获异常并返回`Result.fail(ErrCode.INTERNAL_ERROR, detail=str(e))`
+
+### pywebview 6.x 兼容性说明
+
+PyWebVue目标平台为pywebview 6.x（Windows EdgeChromium）。框架内部绕过了该版本的多个已知问题：
+
+**1. `evaluate_js` 对无返回值的脚本静默失败**
+
+pywebview 6.1 EdgeChromium存在一个bug：`evaluate_js()`内部调用`json.loads(task.Result)`，当脚本无返回值（返回`undefined`）时，`json.loads`抛出`JSONDecodeError`，整个脚本执行被静默丢弃。
+
+**绕过方案：** 框架在所有需要的地方使用`run_js()`替代`evaluate_js()`：
+- `EventBus.emit()` 通过`run_js`派发事件
+- `ApiBase.bind_window()` 通过`run_js`注入`BRIDGE_JS`
+- `_setup_drag_drop()` 通过`run_js`注入拖放处理器
+- `Element.on()` 被monkeypatch为使用`run_js`注册JS事件监听器
+
+**2. `ApiProxy` 必须通过 `inspect.ismethod()` 检查**
+
+pywebview 6.x 通过调用`dir()`枚举`js_api`对象的公开方法，然后对每个属性调用`inspect.ismethod(attr)`来发现API方法。`__getattr__`返回的普通函数无法通过此检查，会被静默跳过，导致所有API方法对前端不可见。
+
+**绕过方案：** `ApiProxy.__getattr__` 通过`types.MethodType(wrapper, self)` 返回包装器，使其成为绑定方法，可通过`inspect.ismethod()`检查。包装器的第一个参数（`self_bound`）接收代理实例注入的`self`并在内部丢弃。
+
+**3. `BRIDGE_JS` 不能覆盖已有的前端状态**
+
+前端的`ensureBridge()`（位于`event-bus.ts`）可能在Python的`BRIDGE_JS`注入之前就初始化了事件桥接。如果`BRIDGE_JS`直接执行`window.__pywebvue_event_listeners = {}`，会清除所有已注册的事件监听器。
+
+**绕过方案：** `BRIDGE_JS` 使用守卫条件（`|| {}` 和 `if (!...)`）确保不会覆盖已有的桥接状态。
+
+**4. `pywebviewready` 事件在 `window` 上派发，而非 `document`**
+
+pywebview在`window`上派发`new CustomEvent('pywebviewready')`。使用`document.addEventListener('pywebviewready', ...)`永远无法捕获。
+
+**绕过方案：** `api.ts`中的`waitForReady()`使用`window.addEventListener(...)`并附带轮询回退。
+
+**5. `Element.__generate_events()` 对 window/document 静默失败**
+
+pywebview的`Element.__generate_events()`使用`evaluate_js`发现DOM元素支持的事件。对于`document`元素，`@_ignore_window_document`装饰器进一步阻止了对`window`/`document`节点ID的处理，返回`None`。因此`element.events.dragover`等属性永远不会被创建。
+
+**绕过方案：** 拖放处理器通过`run_js`直接注入，使用`document.addEventListener()`，完全绕过pywebview的DOM API。
+
+**6. pywebview的 `create_file_dialog` 不接受 `None` 作为可选参数**
+
+传入`directory=None`或`file_types=None`会导致崩溃，因为内部调用了`os.path.exists(None)`。
+
+**绕过方案：** `Dialog`方法传递空字符串`""`和空元组`()`而非`None`。
+
+**7. 前端通过 `ensureBridge()` 自初始化桥接**
+
+由于`run_js(BRIDGE_JS)`的执行时间相对于Vue的`onMounted`是不确定的，前端必须能够独立初始化桥接。`event-bus.ts`中的`ensureBridge()`函数在`window.__pywebvue_dispatch`、`window.__pywebvue_event_listeners`和`window.pywebvue.event`不存在时创建它们，确保事件系统在任何注入时机下都能正常工作。
+
+**`run_js` 与 `evaluate_js` 对比：**
+
+| 方面 | `evaluate_js` | `run_js` |
+|------|---------------|----------|
+| 返回值 | 返回解析后的JSON结果 | 无返回值 |
+| undefined返回 | **静默崩溃**（pywebview 6.x bug） | 正常工作 |
+| 适用场景 | 需要返回值时 | 只需要副作用时 |
+| 框架中的使用 | 已避免 | 全部使用 |

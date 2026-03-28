@@ -1,20 +1,50 @@
 import type { ApiResult } from "@/types";
 
 /**
- * Wait for pywebview to be ready (the 'pywebviewready' DOM event).
+ * Check whether the pywebview bridge object is available.
+ */
+function isPywebviewReady(): boolean {
+  return (
+    typeof window !== "undefined" &&
+    !!(window as unknown as Record<string, unknown>).pywebview
+  );
+}
+
+/**
+ * Wait for pywebview to be ready.
+ *
+ * Uses three strategies in order:
+ * 1. Synchronous check for window.pywebview (already injected).
+ * 2. Listen for the 'pywebviewready' DOM event.
+ * 3. Polling fallback (200ms interval) in case the event fired
+ *    before this function was called (race condition with Vite HMR
+ *    or async module loading).
  */
 export function waitForReady(): Promise<void> {
   return new Promise((resolve) => {
-    if (
-      typeof window !== "undefined" &&
-      (window as unknown as Record<string, unknown>).pywebview
-    ) {
+    if (isPywebviewReady()) {
       resolve();
       return;
     }
-    document.addEventListener("pywebviewready", () => resolve(), {
-      once: true,
-    });
+
+    let settled = false;
+    const done = () => {
+      if (settled) return;
+      settled = true;
+      clearInterval(timer);
+      resolve();
+    };
+
+    // Strategy 2: event listener (pywebview dispatches on window, NOT document)
+    window.addEventListener("pywebviewready", done, { once: true });
+
+    // Strategy 3: polling fallback (race-condition guard)
+    const timer = setInterval(() => {
+      if (isPywebviewReady()) done();
+    }, 200);
+
+    // Safety: stop polling after 30 s to avoid leaking timers
+    setTimeout(() => clearInterval(timer), 30_000);
   });
 }
 
@@ -25,8 +55,11 @@ export async function call<T = unknown>(
   method: string,
   ...args: unknown[]
 ): Promise<ApiResult<T>> {
-  const api = window.pywebview?.api;
-  if (!api) {
+  const api = (window as unknown as Record<string, unknown>).pywebview as
+    | { api: Record<string, (...a: unknown[]) => Promise<unknown>> }
+    | undefined;
+
+  if (!api?.api) {
     return {
       code: 3002,
       msg: "backend is not ready",
@@ -34,7 +67,7 @@ export async function call<T = unknown>(
     };
   }
 
-  const fn = api[method];
+  const fn = api.api[method];
   if (typeof fn !== "function") {
     return {
       code: 1,

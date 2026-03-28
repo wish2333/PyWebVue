@@ -156,7 +156,7 @@ self.emit("progress:update", {"current": 0, "total": 0})
 self.emit("log:add", {"level": "INFO", "message": "Something happened"})
 ```
 
-Event names follow `module:action` convention. `emit()` calls `window.evaluate_js()` internally -- it is safe to call from any thread (pywebview queues JS evaluations on the GUI thread).
+Event names follow `module:action` convention. `emit()` calls `window.run_js()` internally (NOT `evaluate_js` -- see Section 13 for why) -- it is safe to call from any thread (pywebview queues JS evaluations on the GUI thread).
 
 ### 3.6 Background Tasks
 
@@ -765,7 +765,7 @@ Place custom components in `frontend/src/components/`. They can coexist with pre
 
 - Block the GUI thread (no `time.sleep()` in public methods, no synchronous file I/O)
 - Return `Path`, `datetime`, `bytes`, or custom objects from public methods
-- Call `evaluate_js()` directly -- use `self.emit()` instead
+- Call `evaluate_js()` or `run_js()` directly -- use `self.emit()` instead
 - Create multiple `ApiBase` subclasses in one project
 - Use `pywebview` API directly -- go through `ApiBase` / `App`
 - Use `npm` instead of `bun` (template `package.json` scripts use `bun`)
@@ -826,3 +826,55 @@ pywebvue build [--mode MODE] [--spec PATH] [--skip-frontend] [--clean] [--icon P
 | `frontend/src/assets/style.css` | Rarely | Tailwind directives |
 | `frontend/vite.config.ts` | Rarely | Vite config (outDir: ../dist) |
 | `frontend/tailwind.config.ts` | Sometimes | Add DaisyUI themes |
+
+---
+
+## 14. pywebview 6.x Compatibility (Critical Knowledge)
+
+PyWebVue targets pywebview 6.x (EdgeChromium on Windows). The framework contains **mandatory workarounds** for several pywebview 6.x bugs. When modifying framework code or debugging issues, keep these in mind:
+
+### 14.1 NEVER use `evaluate_js` -- always use `run_js`
+
+**Bug:** pywebview 6.1 EdgeChromium's `evaluate_js()` internally calls `json.loads(task.Result)`. When the JS script returns `undefined` (no return value), `json.loads` throws `JSONDecodeError`, and the **entire script execution is silently dropped** -- no error, no warning, nothing.
+
+**Rule:** Use `window.run_js(script)` instead of `window.evaluate_js(script)`. The difference: `run_js` passes `parse_json=False` internally, avoiding the JSON parsing bug.
+
+**Framework locations where this matters:**
+- `EventBus.emit()` in `event_bus.py` -- dispatches events via `run_js`
+- `ApiBase.bind_window()` in `api_base.py` -- injects `BRIDGE_JS` via `run_js`
+- `App._setup_drag_drop()` in `app.py` -- injects drag-drop handlers via `run_js`
+- `App._patch_element_on()` in `app.py` -- monkeypatches `Element.on()` to use `run_js`
+
+### 14.2 ApiProxy must return bound methods via `types.MethodType`
+
+**Bug:** pywebview 6.x discovers API methods by calling `dir()` on the `js_api` object, then `inspect.ismethod(attr)` on each attribute. A plain function from `__getattr__` fails this check and is silently skipped, making all API methods invisible to `window.pywebview.api`.
+
+**Rule:** `ApiProxy.__getattr__` wraps callbacks with `types.MethodType(wrapper, self)` and the wrapper accepts `self_bound` as its first parameter (discarded internally).
+
+### 14.3 BRIDGE_JS must never overwrite existing frontend state
+
+**Bug:** The frontend's `ensureBridge()` in `event-bus.ts` may initialize the bridge before Python's injection. If `BRIDGE_JS` does `window.__pywebvue_event_listeners = {}`, it wipes out all registered listeners.
+
+**Rule:** `BRIDGE_JS` uses `|| {}` and `if (!...)` guards.
+
+### 14.4 `pywebviewready` is on `window`, NOT `document`
+
+**Bug:** pywebview dispatches `new CustomEvent('pywebviewready')` on `window`.
+
+**Rule:** Frontend `waitForReady()` uses `window.addEventListener(...)`.
+
+### 14.5 Do NOT use `element.events.xxx` for drag-drop
+
+**Bug:** `Element.__generate_events()` uses `evaluate_js` (fails silently) and is additionally blocked by `@_ignore_window_document` for document elements. So `element.events.dragover` etc. never exist.
+
+**Rule:** Drag-drop handlers are injected directly via `run_js` using `document.addEventListener()`.
+
+### 14.6 Dialog params must never be `None`
+
+**Bug:** pywebview's `create_file_dialog()` calls `os.path.exists(None)` which crashes.
+
+**Rule:** `Dialog` methods pass `""` (empty string) and `()` (empty tuple) instead of `None`.
+
+### 14.7 Frontend must self-initialize the bridge
+
+**Rule:** The `ensureBridge()` function in `event-bus.ts` must create `window.__pywebvue_dispatch`, `window.__pywebvue_event_listeners`, and `window.pywebvue.event` independently, since the Python injection timing is non-deterministic relative to Vue's lifecycle.

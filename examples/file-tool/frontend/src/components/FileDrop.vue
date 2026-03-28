@@ -1,20 +1,15 @@
 <script setup lang="ts">
 import { ref } from "vue";
-import { useEvent } from "@/event-bus";
-import { inject } from "vue";
-import type { ToastOptions } from "@/types";
 
+/**
+ * FileDrop component - visual drop zone indicator.
+ *
+ * Note: Actual file path extraction is handled by pywebview's native
+ * file drop mechanism at the window level. When files are dropped onto
+ * the pywebview window, the framework calls ApiBase.on_file_drop(file_paths).
+ * This component only provides visual drag-over feedback.
+ */
 const isDragging = ref(false);
-const droppedFiles = ref<string[]>([]);
-
-const toast = inject<{ showToast: (options: ToastOptions) => void }>("toast");
-
-useEvent("file:dropped", (data) => {
-  const entry = data as { path: string };
-  if (!droppedFiles.value.includes(entry.path)) {
-    droppedFiles.value = [...droppedFiles.value, entry.path];
-  }
-});
 
 function onDragOver(event: DragEvent) {
   event.preventDefault();
@@ -47,15 +42,9 @@ function onDrop(event: DragEvent) {
           Drop files here
         </p>
         <p v-else class="text-base-content/60">
-          Drag and drop files onto the window
+          Drag and drop files onto the window, or use the Browse button below
         </p>
       </div>
-
-      <ul v-if="droppedFiles.length > 0" class="list-disc list-inside text-sm mt-2 space-y-1">
-        <li v-for="(path, idx) in droppedFiles" :key="idx">
-          {{ path }}
-        </li>
-      </ul>
     </div>
   </div>
 </template>

@@ -3,7 +3,7 @@ import { ref, reactive, computed, onMounted, provide } from "vue";
 import { waitForReady, call } from "@/api";
 import { useEvent } from "@/event-bus";
 import { isOk } from "@/types";
-import type { ToastOptions, StatusState, ProcessStatus } from "@/types";
+import type { ToastOptions, StatusState, ProcessStatus, PresetCommand, SystemInfo } from "@/types";
 import StatusBadge from "@/components/StatusBadge.vue";
 import LogPanel from "@/components/LogPanel.vue";
 import Toast from "@/components/Toast.vue";
@@ -12,7 +12,13 @@ const backendReady = ref(false);
 const processState = ref<StatusState>("idle");
 const pid = ref<number | null>(null);
 const timeoutRemaining = ref<number | null>(null);
-const cmdInput = ref('python -c "for i in range(10): print(f\'line {i}\'); import time; time.sleep(0.5)"');
+const outputCount = ref<number>(0);
+const elapsed = ref<number | null>(null);
+const cmdInput = ref("");
+const cmdTimeout = ref("");
+const presets = ref<PresetCommand[]>([]);
+const sysInfo = ref<SystemInfo | null>(null);
+const showSysInfo = ref(false);
 
 // -- Toast provide/inject -----------------------------------------------
 let _toastId = 0;
@@ -74,12 +80,34 @@ async function refreshStatus() {
   if (isOk(result)) {
     pid.value = result.data.pid;
     timeoutRemaining.value = result.data.timeout_remaining;
+    outputCount.value = result.data.output_count;
+    elapsed.value = result.data.elapsed;
   }
+}
+
+async function loadPresets() {
+  const result = await call<{ presets: PresetCommand[] }>("get_presets");
+  if (isOk(result)) {
+    presets.value = result.data.presets;
+  }
+}
+
+async function loadSystemInfo() {
+  const result = await call<SystemInfo>("get_system_info");
+  if (isOk(result)) {
+    sysInfo.value = result.data;
+  }
+}
+
+function selectPreset(preset: PresetCommand) {
+  cmdInput.value = preset.command;
+  cmdTimeout.value = preset.timeout;
 }
 
 async function startProcess() {
   if (!cmdInput.value.trim()) return;
-  const result = await call("start_task", cmdInput.value.trim());
+  const timeout = cmdTimeout.value ? parseInt(cmdTimeout.value, 10) : null;
+  const result = await call("start_task", cmdInput.value.trim(), timeout);
   if (isOk(result)) {
     showToast({ type: "info", message: "Process started" });
   } else {
@@ -113,6 +141,15 @@ async function resetProcess() {
   if (isOk(result)) {
     pid.value = null;
     timeoutRemaining.value = null;
+    outputCount.value = 0;
+    elapsed.value = null;
+  }
+}
+
+async function toggleSysInfo() {
+  showSysInfo.value = !showSysInfo.value;
+  if (showSysInfo.value && !sysInfo.value) {
+    await loadSystemInfo();
   }
 }
 
@@ -122,6 +159,7 @@ onMounted(async () => {
     await waitForReady();
     backendReady.value = true;
     refreshStatus();
+    loadPresets();
   } catch {
     backendReady.value = false;
   }
@@ -139,19 +177,20 @@ onMounted(async () => {
         <span class="badge badge-ghost ml-2">Example</span>
       </div>
       <div class="flex items-center gap-2">
-        <StatusBadge :status="processState" />
-        <span
-          v-if="pid"
-          class="badge badge-outline badge-sm"
-        >
-          PID: {{ pid }}
+        <StatusBadge :status="processState" :elapsed="elapsed" />
+        <span v-if="pid" class="badge badge-outline badge-sm">PID: {{ pid }}</span>
+        <span v-if="outputCount > 0" class="badge badge-outline badge-sm">{{ outputCount }} lines</span>
+        <span v-if="elapsed !== null && (processState === 'running' || processState === 'paused')" class="badge badge-outline badge-sm">
+          {{ elapsed }}s
         </span>
-        <span
-          v-if="timeoutRemaining !== null"
-          class="badge badge-outline badge-sm"
+        <span v-if="timeoutRemaining !== null" class="badge badge-outline badge-sm">Timeout: {{ timeoutRemaining }}s</span>
+        <button
+          class="btn btn-ghost btn-xs"
+          :disabled="!backendReady"
+          @click="toggleSysInfo"
         >
-          Timeout: {{ timeoutRemaining }}s
-        </span>
+          {{ showSysInfo ? 'Hide' : 'System Info' }}
+        </button>
         <span
           class="badge"
           :class="backendReady ? 'badge-success' : 'badge-warning'"
@@ -164,6 +203,75 @@ onMounted(async () => {
     <!-- Main content -->
     <main class="flex-1 overflow-auto p-4">
       <div class="max-w-4xl mx-auto space-y-4">
+
+        <!-- System Info panel (collapsible) -->
+        <div v-if="showSysInfo" class="card bg-base-100 shadow">
+          <div class="card-body">
+            <h2 class="card-title">System Information</h2>
+            <div v-if="!sysInfo" class="text-base-content/40 text-sm">Loading...</div>
+            <div v-else class="overflow-x-auto">
+              <table class="table table-sm">
+                <tbody>
+                  <tr>
+                    <td class="font-medium w-40">Hostname</td>
+                    <td class="font-mono text-sm">{{ sysInfo.hostname }}</td>
+                  </tr>
+                  <tr>
+                    <td class="font-medium">OS</td>
+                    <td class="text-sm">{{ sysInfo.system }} {{ sysInfo.release }}</td>
+                  </tr>
+                  <tr>
+                    <td class="font-medium">Architecture</td>
+                    <td class="text-sm">{{ sysInfo.machine }}</td>
+                  </tr>
+                  <tr>
+                    <td class="font-medium">Python</td>
+                    <td class="text-sm">{{ sysInfo.python_version }}</td>
+                  </tr>
+                  <tr>
+                    <td class="font-medium">CPU Cores</td>
+                    <td class="text-sm">{{ sysInfo.cpu_count ?? 'N/A' }}</td>
+                  </tr>
+                  <tr>
+                    <td class="font-medium">CPU Usage</td>
+                    <td class="text-sm">{{ sysInfo.cpu_percent !== null ? `${sysInfo.cpu_percent}%` : 'N/A (install psutil)' }}</td>
+                  </tr>
+                  <tr v-if="sysInfo.memory_total">
+                    <td class="font-medium">Memory</td>
+                    <td class="text-sm">
+                      {{ sysInfo.memory_used_display }} / {{ sysInfo.memory_total_display }}
+                      ({{ sysInfo.memory_percent?.toFixed(1) }}%)
+                    </td>
+                  </tr>
+                  <tr v-else>
+                    <td class="font-medium">Memory</td>
+                    <td class="text-sm text-base-content/40">N/A (install psutil for memory info)</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- Preset commands -->
+        <div v-if="presets.length > 0" class="card bg-base-100 shadow">
+          <div class="card-body p-3">
+            <h2 class="card-title text-sm mb-2">Quick Presets</h2>
+            <div class="flex flex-wrap gap-2">
+              <button
+                v-for="preset in presets"
+                :key="preset.name"
+                class="btn btn-sm btn-outline"
+                :disabled="!canStart"
+                :title="preset.description"
+                @click="selectPreset(preset)"
+              >
+                {{ preset.name }}
+              </button>
+            </div>
+          </div>
+        </div>
+
         <!-- Command input -->
         <div class="card bg-base-100 shadow">
           <div class="card-body">
@@ -175,6 +283,18 @@ onMounted(async () => {
               placeholder="Enter a command to run..."
               :disabled="!canStart"
             ></textarea>
+
+            <!-- Timeout input -->
+            <div class="flex items-center gap-2 mt-2">
+              <label class="text-sm text-base-content/60">Timeout (s):</label>
+              <input
+                v-model="cmdTimeout"
+                type="number"
+                class="input input-bordered input-sm input-number w-24"
+                min="0"
+                placeholder="No limit"
+              />
+            </div>
 
             <!-- Control buttons -->
             <div class="flex flex-wrap gap-2 mt-2">

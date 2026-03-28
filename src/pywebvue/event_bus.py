@@ -11,34 +11,42 @@ from .constants import DISPATCH_FN
 
 
 BRIDGE_JS = """\
-window.__pywebvue_event_listeners = {};
-window.__pywebvue_dispatch = function(eventName, payload) {
-    var listeners = window.__pywebvue_event_listeners[eventName];
-    if (listeners) {
-        for (var i = 0; i < listeners.length; i++) {
-            try { listeners[i](payload); } catch(e) { console.error(e); }
+window.__pywebvue_event_listeners = window.__pywebvue_event_listeners || {};
+if (!window.__pywebvue_dispatch) {
+    window.__pywebvue_dispatch = function(eventName, payload) {
+        var listeners = window.__pywebvue_event_listeners[eventName];
+        if (listeners) {
+            for (var i = 0; i < listeners.length; i++) {
+                try { listeners[i](payload); } catch(e) { console.error(e); }
+            }
         }
-    }
-};
+    };
+}
 window.pywebvue = window.pywebvue || {};
-window.pywebvue.event = {
-    on: function(name, callback) {
-        if (!window.__pywebvue_event_listeners[name]) {
-            window.__pywebvue_event_listeners[name] = [];
+if (!window.pywebvue.event) {
+    window.pywebvue.event = {
+        on: function(name, callback) {
+            if (!window.__pywebvue_event_listeners[name]) {
+                window.__pywebvue_event_listeners[name] = [];
+            }
+            window.__pywebvue_event_listeners[name].push(callback);
+        },
+        off: function(name, callback) {
+            var list = window.__pywebvue_event_listeners[name];
+            if (!list) return;
+            window.__pywebvue_event_listeners[name] = list.filter(function(cb) { return cb !== callback; });
         }
-        window.__pywebvue_event_listeners[name].push(callback);
-    },
-    off: function(name, callback) {
-        var list = window.__pywebvue_event_listeners[name];
-        if (!list) return;
-        window.__pywebvue_event_listeners[name] = list.filter(function(cb) { return cb !== callback; });
-    }
-};
+    };
+}
+document.dispatchEvent(new Event('pywebvueready'));
 """
 
 
 class EventBus:
-    """Push events from Python to frontend via pywebview evaluate_js.
+    """Push events from Python to frontend via pywebview run_js.
+
+    Uses run_js instead of evaluate_js to avoid a pywebview 6.x bug where
+    json.loads(task.Result) fails for scripts returning undefined.
 
     The bridge JS (BRIDGE_JS) must be injected into the page before events
     can be dispatched. This is typically done in App._on_window_loaded().
@@ -67,7 +75,7 @@ class EventBus:
             return
         try:
             json_str = json.dumps(data if data is not None else {}, ensure_ascii=False)
-            self._window.evaluate_js(
+            self._window.run_js(
                 f'{DISPATCH_FN}("{event_name}", {json_str})'
             )
         except Exception as e:

@@ -70,7 +70,10 @@ class ApiBase:
         self._event_bus.bind(window)
         self._dialog.bind(window)
         try:
-            window.evaluate_js(BRIDGE_JS)
+            # Use run_js instead of evaluate_js: in pywebview 6.x the latter
+            # has a bug where json.loads(task.Result) fails for scripts that
+            # return undefined (no return value), silently dropping the call.
+            window.run_js(BRIDGE_JS)
         except Exception as e:
             self._logger.warning(f"Failed to inject bridge JS: {e}")
 

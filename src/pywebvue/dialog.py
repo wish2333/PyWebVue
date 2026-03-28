@@ -40,9 +40,9 @@ class Dialog:
         """
         return self._window.create_file_dialog(
             webview.FileDialog.OPEN,
-            directory=folder or None,
+            directory=folder,
             allow_multiple=multiple,
-            file_types=file_types if file_types else None,
+            file_types=tuple(file_types) if file_types else (),
         )
 
     def open_folder(self, title: str = "Select Folder", folder: str = "") -> list[str] | None:
@@ -53,7 +53,7 @@ class Dialog:
         """
         return self._window.create_file_dialog(
             webview.FileDialog.FOLDER,
-            directory=folder or None,
+            directory=folder,
         )
 
     def save_file(
@@ -70,7 +70,7 @@ class Dialog:
         """
         return self._window.create_file_dialog(
             webview.FileDialog.SAVE,
-            directory=folder or None,
-            save_filename=default_name or None,
-            file_types=file_types if file_types else None,
+            directory=folder,
+            save_filename=default_name,
+            file_types=tuple(file_types) if file_types else (),
         )

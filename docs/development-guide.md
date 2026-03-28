@@ -38,7 +38,7 @@ Python Backend (ApiBase)  <--pywebview JS bridge-->  Vue 3 Frontend
 | `ApiBase` | `api_base.py` | Base class for user business APIs |
 | `ApiProxy` | `app.py` | Wraps ApiBase with global exception interception |
 | `ProcessManager` | `process.py` | Subprocess state machine (start/pause/resume/stop/timeout) |
-| `EventBus` | `event_bus.py` | Python-to-frontend event dispatch via `evaluate_js` |
+| `EventBus` | `event_bus.py` | Python-to-frontend event dispatch via `run_js` |
 | `Dialog` | `dialog.py` | Native file/folder/save dialogs |
 | `Logger` | `logger.py` | Dual-channel logging (console + frontend LogPanel) |
 | `Config` | `config.py` | YAML configuration loading into dataclasses |
@@ -58,10 +58,11 @@ main.py
     -> run()
       -> _determine_url()   # Vite dev server or production dist/
       -> webview.create_window(js_api=ApiProxy(api_instance))
+      -> _patch_element_on()     # Monkeypatch Element.on() to use run_js
       -> webview.start()
         -> _on_window_loaded()
-          -> inject BRIDGE_JS    # window.pywebvue.event.on/off/dispatch
-          -> _setup_drag_drop()  # DOM event handlers for file drops
+          -> inject BRIDGE_JS via run_js    # window.pywebvue.event.on/off/dispatch
+          -> _setup_drag_drop()             # Direct JS injection via run_js
 ```
 
 The `ApiProxy` wraps every public method call. If the method raises an uncaught exception, the proxy catches it and returns `Result.fail(ErrCode.INTERNAL_ERROR)` instead of propagating a rejected Promise to JavaScript. This means frontend code can always rely on the `{ code, msg, data }` response shape.
@@ -245,7 +246,7 @@ def _simulate_processing(self, path: str) -> None:
     self.emit("file:process_complete", {"path": path, "name": os.path.basename(path)})
 ```
 
-Important: `self.emit()` calls `evaluate_js()` which must run on the GUI thread. pywebview queues these calls safely, but avoid emitting thousands of events per second in tight loops.
+Important: `self.emit()` calls `run_js()` which must run on the GUI thread. pywebview queues these calls safely, but avoid emitting thousands of events per second in tight loops.
 
 ### Error Handling Strategy
 
@@ -879,3 +880,60 @@ When packaging with PyInstaller, the `ProcessManager` uses `subprocess.Popen` wi
 3. **Use `self.logger.opt(exception=True).error(...)`** for detailed error context
 4. **Check the browser DevTools** -- pywebview in debug mode enables right-click > Inspect Element
 5. **API errors are never silent** -- `ApiProxy` catches all uncaught exceptions and returns `Result.fail(ErrCode.INTERNAL_ERROR, detail=str(e))`
+
+### pywebview 6.x Compatibility Notes
+
+PyWebVue targets pywebview 6.x (EdgeChromium on Windows). The framework works around several known issues in this version:
+
+**1. `evaluate_js` silently fails for scripts returning undefined**
+
+pywebview 6.1 EdgeChromium has a bug where `evaluate_js()` calls `json.loads(task.Result)` internally. When the script has no return value (returns `undefined`), `json.loads` throws a `JSONDecodeError`, and the entire script execution is silently dropped.
+
+**Workaround:** The framework uses `run_js()` instead of `evaluate_js()` everywhere:
+- `EventBus.emit()` dispatches events via `run_js`
+- `ApiBase.bind_window()` injects `BRIDGE_JS` via `run_js`
+- `_setup_drag_drop()` injects drag-drop handlers via `run_js`
+- `Element.on()` is monkeypatched to use `run_js` for JS event listener registration
+
+**2. `ApiProxy` must pass `inspect.ismethod()` check**
+
+pywebview 6.x discovers API methods by calling `dir()` on the `js_api` object, then checking `inspect.ismethod(attr)` on each attribute. A plain function returned from `__getattr__` fails this check and is silently skipped, causing all API methods to be invisible to the frontend.
+
+**Workaround:** `ApiProxy.__getattr__` returns the wrapper via `types.MethodType(wrapper, self)`, making it a bound method that passes `inspect.ismethod()`. The wrapper accepts the injected `self` as the first parameter (`self_bound`) and discards it.
+
+**3. `BRIDGE_JS` must not overwrite existing frontend state**
+
+The frontend's `ensureBridge()` in `event-bus.ts` may initialize the event bridge before Python's `BRIDGE_JS` injection runs. If `BRIDGE_JS` blindly does `window.__pywebvue_event_listeners = {}`, it wipes out all previously registered event listeners.
+
+**Workaround:** `BRIDGE_JS` uses guards (`|| {}` and `if (!...)`) to never overwrite existing bridge state.
+
+**4. `pywebviewready` event is dispatched on `window`, not `document`**
+
+pywebview dispatches `new CustomEvent('pywebviewready')` on `window`. Using `document.addEventListener('pywebviewready', ...)` will never catch it.
+
+**Workaround:** `waitForReady()` in `api.ts` uses `window.addEventListener(...)` with a polling fallback.
+
+**5. `Element.__generate_events()` silently fails for window/document**
+
+pywebview's `Element.__generate_events()` uses `evaluate_js` to discover which events a DOM element supports. For the `document` element, this is further blocked by the `@_ignore_window_document` decorator which returns `None` for `window`/`document` node IDs. This means `element.events.dragover` etc. are never created.
+
+**Workaround:** Drag-drop handlers are injected directly via `run_js` using `document.addEventListener()`, bypassing pywebview's DOM API entirely.
+
+**6. pywebview's `create_file_dialog` does not accept `None` for optional params**
+
+Passing `directory=None` or `file_types=None` to `create_file_dialog()` crashes because it calls `os.path.exists(None)`.
+
+**Workaround:** `Dialog` methods pass empty strings `""` and empty tuples `()` instead of `None`.
+
+**7. Frontend bridge self-initialization via `ensureBridge()`**
+
+Since `run_js(BRIDGE_JS)` may execute at any time relative to Vue's `onMounted`, the frontend must be able to initialize the bridge independently. The `ensureBridge()` function in `event-bus.ts` creates `window.__pywebvue_dispatch`, `window.__pywebvue_event_listeners`, and `window.pywebvue.event` if they don't already exist, so the event system works regardless of injection timing.
+
+**Summary of `run_js` vs `evaluate_js`:**
+
+| Aspect | `evaluate_js` | `run_js` |
+|--------|---------------|----------|
+| Return value | Returns parsed JSON result | No return value |
+| Undefined return | **Crashes silently** (pywebview 6.x bug) | Works fine |
+| When to use | When you need the return value | When you only need side effects |
+| Framework usage | Avoided | Used everywhere |

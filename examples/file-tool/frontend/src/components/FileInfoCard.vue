@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { FileInfo } from "@/types";
+import { CATEGORY_STYLE } from "@/types";
 
 defineProps<{
   fileInfo: FileInfo | null;
@@ -26,6 +27,17 @@ defineProps<{
               <td class="font-medium">Extension</td>
               <td>
                 <span class="badge badge-outline badge-sm">{{ fileInfo.extension }}</span>
+              </td>
+            </tr>
+            <tr>
+              <td class="font-medium">Category</td>
+              <td>
+                <span
+                  class="badge badge-sm"
+                  :class="CATEGORY_STYLE[fileInfo.category]?.color ?? 'badge-ghost'"
+                >
+                  {{ CATEGORY_STYLE[fileInfo.category]?.label ?? fileInfo.category }}
+                </span>
               </td>
             </tr>
             <tr>

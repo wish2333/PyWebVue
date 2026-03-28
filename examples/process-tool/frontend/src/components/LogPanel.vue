@@ -59,7 +59,7 @@ function levelClass(level: string): string {
   <div class="card bg-base-100 shadow">
     <div class="card-body">
       <div class="flex items-center justify-between">
-        <h2 class="card-title">Logs</h2>
+        <h2 class="card-title">Logs <span class="badge badge-sm badge-ghost font-normal">{{ logs.length }}</span></h2>
         <div class="flex items-center gap-2">
           <select
             v-model="filterLevel"

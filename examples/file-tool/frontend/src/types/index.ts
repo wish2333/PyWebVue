@@ -73,4 +73,26 @@ export interface FileInfo {
   size_display: string;
   modified: string;
   is_binary: boolean;
+  category: string;
 }
+
+/** Hash computation result. */
+export interface HashResult {
+  path: string;
+  name: string;
+  md5: string;
+  sha256: string;
+  size: string;
+}
+
+/** File extension to category badge mapping. */
+export const CATEGORY_STYLE: Record<string, { label: string; color: string }> = {
+  code: { label: "Code", color: "badge-info" },
+  data: { label: "Data", color: "badge-success" },
+  doc: { label: "Document", color: "badge-primary" },
+  image: { label: "Image", color: "badge-warning" },
+  archive: { label: "Archive", color: "badge-error" },
+  executable: { label: "Executable", color: "badge-error" },
+  media: { label: "Media", color: "badge-secondary" },
+  other: { label: "Other", color: "badge-ghost" },
+};

@@ -46,7 +46,7 @@ pywebvue create my_app --title "My Application"
 cd my_app
 uv sync
 cd frontend && bun install && cd ..
-uv run python main.py --with-vite
+uv run main.py --with-vite
 ```
 
 ### Build for Distribution

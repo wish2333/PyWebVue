@@ -65,4 +65,31 @@ export interface ProcessStatus {
   state: string;
   pid: number | null;
   timeout_remaining: number | null;
+  output_count: number;
+  elapsed: number | null;
+}
+
+/** Preset command definition. */
+export interface PresetCommand {
+  name: string;
+  description: string;
+  command: string;
+  timeout: string;
+}
+
+/** System info data from get_system_info. */
+export interface SystemInfo {
+  system: string;
+  release: string;
+  version: string;
+  machine: string;
+  python_version: string;
+  cpu_count: number | null;
+  hostname: string;
+  memory_total: number | null;
+  memory_total_display?: string;
+  memory_used?: number;
+  memory_used_display?: string;
+  memory_percent?: number;
+  cpu_percent?: number | null;
 }

@@ -7,6 +7,8 @@ import inspect
 import os
 import sys
 import threading
+import types
+import urllib.parse
 import urllib.request
 import urllib.error
 from typing import Any
@@ -33,13 +35,25 @@ class ApiProxy:
     def __init__(self, api_instance: ApiBase) -> None:
         object.__setattr__(self, "_api", api_instance)
 
+    def __dir__(self) -> list[str]:
+        """Expose wrapped object's public methods so pywebview can discover them.
+
+        pywebview 6.x uses dir() on the js_api object to enumerate methods
+        for the JavaScript bridge.  Without __dir__, only the proxy's own
+        dunders are returned and no API methods are visible to the frontend.
+        """
+        api = object.__getattribute__(self, "_api")
+        own = [n for n in dir(type(self)) if not n.startswith("_")]
+        delegated = [n for n in dir(api) if not n.startswith("_")]
+        return sorted(set(own) | set(delegated))
+
     def __getattr__(self, name: str) -> Any:
         api = object.__getattribute__(self, "_api")
         attr = getattr(api, name)
         if not callable(attr):
             return attr
 
-        def wrapper(*args: Any, **kwargs: Any) -> Any:
+        def wrapper(self_bound: Any, *args: Any, **kwargs: Any) -> Any:
             try:
                 result = attr(*args, **kwargs)
                 # If the result is a Result dataclass, convert to dict for JSON serialization
@@ -50,7 +64,11 @@ class ApiProxy:
                 api.logger.opt(exception=True).error(f"Uncaught exception in {name}: {e}")
                 return Result.fail(ErrCode.INTERNAL_ERROR, detail=str(e)).to_dict()
 
-        return wrapper
+        # Return as a bound method so that pywebview's inspect.ismethod() check passes.
+        # pywebview 6.x uses inspect.ismethod(attr) to detect API functions;
+        # plain functions returned from __getattr__ are skipped.
+        # The first param (self_bound) receives the proxy instance from MethodType binding.
+        return types.MethodType(wrapper, self)
 
     def __setattr__(self, name: str, value: Any) -> None:
         api = object.__getattribute__(self, "_api")
@@ -116,6 +134,12 @@ class App:
         }
 
         self._window = webview.create_window(**window_args)
+
+        # Patch pywebview's Element.on() to use run_js instead of evaluate_js.
+        # In pywebview 6.x (EdgeChromium), evaluate_js silently fails for scripts
+        # that return undefined, breaking all DOM event registration (drag, drop,
+        # click, etc.). run_js avoids this by setting parse_json=False internally.
+        self._patch_element_on()
 
         # Register lifecycle events
         self._window.events.loaded += self._on_window_loaded
@@ -208,32 +232,130 @@ class App:
         # Bind window to ApiBase (injects bridge JS, connects event bus + dialog)
         self._api_instance.bind_window(self._window)
 
-        # Setup drag & drop using pywebview DOM events
+        # Setup drag & drop
         try:
             self._setup_drag_drop()
         except Exception as e:
-            logger.debug(f"Drag-drop setup skipped: {e}")
+            logger.warning(f"Drag-drop setup failed: {e}")
 
     def _setup_drag_drop(self) -> None:
-        """Register native drag-and-drop via pywebview DOM events."""
-        from webview.dom import DOMEventHandler
+        """Register native drag-and-drop handlers directly via JS injection.
+
+        Bypasses pywebview's DOM event API (Element.on / __generate_events)
+        which relies on evaluate_js and silently fails in pywebview 6.x.
+        Instead, injects plain JS event listeners via run_js and uses
+        pywebview's native _jsApiCallback to extract full file paths.
+        """
+        from webview.dom import _dnd_state
+
+        # Signal to pywebview that we have a drop listener so the native
+        # EdgeChromium handler stores file paths in _dnd_state['paths'].
+        _dnd_state['num_listeners'] += 1
+
+        # Register the Python callback that pywebview's event handler will invoke
+        doc_element = self._window.dom.document
 
         def on_drop(event: dict) -> None:
-            files = event.get("domTransfer", {}).get("files", [])
+            files = event.get("dataTransfer", {}).get("files", [])
             paths = []
             for f in files:
                 full_path = f.get("pywebviewFullPath")
                 if full_path:
                     paths.append(full_path)
             if paths:
-                # Run in a thread to avoid blocking the GUI
                 threading.Thread(
                     target=self._api_instance.on_file_drop,
                     args=(paths,),
                     daemon=True,
                 ).start()
+                logger.info(f"Files dropped (drag-drop): {paths}")
+            else:
+                logger.warning(f"Drop event received but no file paths extracted: {list(files)}")
 
-        self._window.dom.document.events.drop += DOMEventHandler(on_drop, prevent_default=True)
+        # Store callback so pywebview's pywebviewEventHandler can find it
+        if doc_element._node_id not in self._window.dom._elements:
+            self._window.dom._elements[doc_element._node_id] = doc_element
+        doc_element._event_handlers["drop"].append(on_drop)
+
+        # Inject JS event listeners directly - no evaluate_js, no DOM API needed
+        drop_js = """
+            document.addEventListener('dragover', function(e) { e.preventDefault(); });
+            document.addEventListener('dragenter', function(e) { e.preventDefault(); });
+            document.addEventListener('drop', function(e) {
+                e.preventDefault();
+                e.stopPropagation();
+                if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+                    window.pywebview._jsApiCallback('pywebviewEventHandler', { event: e, nodeId: 'document' }, 'eventHandler');
+                }
+            });
+        """
+        self._window.run_js(drop_js)
+        logger.info("Drag-drop handlers injected via run_js")
+
+    @staticmethod
+    def _patch_element_on() -> None:
+        """Monkeypatch pywebview's Element.on() to use run_js instead of evaluate_js.
+
+        In pywebview 6.x EdgeChromium, evaluate_js has a bug where
+        json.loads(task.Result) throws for scripts returning undefined,
+        silently dropping the execution. Element.on() uses evaluate_js
+        to register JS event listeners and get back the handler_id.
+
+        This patch generates handler_id in Python and uses run_js (which
+        sets parse_json=False) for JS injection.
+        """
+        from webview.dom.element import Element
+        from webview.dom import DOMEventHandler, _dnd_state
+
+        _original_on = Element.on
+
+        def _patched_on(self, event: str, callback: Any) -> None:
+            if isinstance(callback, DOMEventHandler):
+                prevent_default = 'e.preventDefault();' if callback.prevent_default else ''
+                stop_propagation = 'e.stopPropagation();' if callback.stop_propagation else ''
+                debounce = callback.debounce
+                cb = callback.callback
+            else:
+                prevent_default = ''
+                stop_propagation = ''
+                debounce = 0
+                cb = callback
+
+            # Generate handler_id in Python (avoids needing evaluate_js return value)
+            handler_id = os.urandom(8).hex()
+
+            callback_func = (
+                f"window.pywebview._jsApiCallback('pywebviewEventHandler', "
+                f"{{ event: e, nodeId: '{self._node_id}' }}, 'eventHandler')"
+            )
+            debounced_func = (
+                f"pywebview._debounce(function() {{ {callback_func} }}, {debounce})"
+                if debounce > 0
+                else callback_func
+            )
+
+            js_code = (
+                f"{self._query_command};"
+                f"if (element) {{"
+                f"pywebview._eventHandlers['{handler_id}'] = function(e) {{"
+                f"{prevent_default}{stop_propagation}{debounced_func};"
+                f"}};"
+                f"element.addEventListener('{event}', pywebview._eventHandlers['{handler_id}']);"
+                f"}};"
+            )
+
+            self._window.run_js(js_code)
+
+            if self._node_id not in self._window.dom._elements:
+                self._window.dom._elements[self._node_id] = self
+
+            self._event_handlers[event].append(cb)
+            self._event_handler_ids[cb] = handler_id
+
+            if event == 'drop':
+                _dnd_state['num_listeners'] += 1
+
+        Element.on = _patched_on  # type: ignore[assignment]
 
     def _on_window_closing(self) -> bool:
         """Called when the window is about to close. Cleanup resources."""
