@@ -45,7 +45,6 @@ const toastTypeClass: Record<string, string> = {
   warning: "alert-warning",
   info: "alert-info",
 };
-
 </script>
 
 <template>

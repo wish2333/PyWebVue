@@ -1,0 +1,15 @@
+[project]
+name = "file-tool"
+version = "0.1.0"
+description = "PyWebVue file tool example"
+requires-python = ">=3.10.8"
+dependencies = [
+    "pywebvue-framework>=0.1.0",
+    "loguru>=0.7.3",
+    "pywebview>=6.1",
+    "pyyaml>=6.0.3",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

@@ -1,18 +1,19 @@
 <script setup lang="ts">
-import { ref, onMounted, provide, reactive } from "vue";
+import { ref, reactive, onMounted, provide } from "vue";
 import { waitForReady, call } from "@/api";
 import { useEvent } from "@/event-bus";
 import { isOk } from "@/types";
-import type { ToastOptions, LogEntry, ProgressPayload } from "@/types";
+import type { ToastOptions, ProgressPayload, FileInfo } from "@/types";
 import FileDrop from "@/components/FileDrop.vue";
-import LogPanel from "@/components/LogPanel.vue";
+import FileInfoCard from "@/components/FileInfoCard.vue";
 import ProgressBar from "@/components/ProgressBar.vue";
+import LogPanel from "@/components/LogPanel.vue";
 import Toast from "@/components/Toast.vue";
 
-const version = ref("0.1.0");
 const backendReady = ref(false);
-const lastApiResult = ref("");
 const progress = ref<ProgressPayload | null>(null);
+const fileInfo = ref<FileInfo | null>(null);
+const processing = ref(false);
 
 // -- Toast provide/inject -----------------------------------------------
 let _toastId = 0;
@@ -26,34 +27,52 @@ function removeToast(index: number) {
   toastQueue.splice(index, 1);
 }
 
+provide("toast", { showToast });
 provide("removeToast", removeToast);
 
-provide("toast", { showToast });
-provide("version", version);
-
 // -- Event subscriptions -------------------------------------------------
-useEvent("log:add", (data) => {
-  const entry = data as LogEntry;
-  console.log(`[${entry.level}] ${entry.message}`);
+useEvent("file:dropped", (data) => {
+  const { path } = data as { path: string };
+  showToast({ type: "info", message: `File received: ${path}` });
+  loadFileInfo(path);
 });
 
 useEvent("progress:update", (data) => {
   progress.value = data as ProgressPayload;
+  if ((data as ProgressPayload).current === 0) {
+    processing.value = false;
+  }
 });
 
-useEvent("file:dropped", (data) => {
-  const { path } = data as { path: string };
-  showToast({ type: "info", message: `File received: ${path}` });
+useEvent("file:process_complete", (data) => {
+  const { name } = data as { name: string };
+  showToast({ type: "success", message: `Processing complete: ${name}` });
+  processing.value = false;
+});
+
+useEvent("log:add", (data) => {
+  const entry = data as { level: string; message: string };
+  console.log(`[${entry.level}] ${entry.message}`);
 });
 
 // -- API calls ----------------------------------------------------------
-async function checkHealth() {
-  lastApiResult.value = "Calling health_check...";
-  const result = await call<{ status: string }>("health_check");
+async function loadFileInfo(path: string) {
+  const result = await call<FileInfo>("get_file_info", path);
   if (isOk(result)) {
-    lastApiResult.value = `OK - status: ${result.data.status}`;
+    fileInfo.value = result.data;
   } else {
-    lastApiResult.value = `FAILED - ${result.msg}`;
+    showToast({ type: "error", message: `Failed to read file: ${result.msg}` });
+  }
+}
+
+async function processSelectedFile() {
+  if (!fileInfo.value || processing.value) return;
+  processing.value = true;
+  progress.value = null;
+  const result = await call("process_file", fileInfo.value.path);
+  if (!isOk(result)) {
+    showToast({ type: "error", message: result.msg });
+    processing.value = false;
   }
 }
 
@@ -62,9 +81,8 @@ onMounted(async () => {
   try {
     await waitForReady();
     backendReady.value = true;
-    lastApiResult.value = "Backend connected";
   } catch {
-    lastApiResult.value = "Backend not available (running outside pywebview)";
+    backendReady.value = false;
   }
 });
 </script>
@@ -76,8 +94,8 @@ onMounted(async () => {
     <!-- Navbar -->
     <nav class="navbar bg-base-100 shadow-md px-4">
       <div class="flex-1">
-        <span class="text-lg font-bold">{{PROJECT_TITLE}}</span>
-        <span class="badge badge-ghost ml-2">v{{ version }}</span>
+        <span class="text-lg font-bold">File Tool</span>
+        <span class="badge badge-ghost ml-2">Example</span>
       </div>
       <div class="flex-none">
         <span
@@ -92,43 +110,31 @@ onMounted(async () => {
     <!-- Main content -->
     <main class="flex-1 overflow-auto p-4">
       <div class="max-w-4xl mx-auto space-y-4">
-        <!-- Health check -->
-        <div class="card bg-base-100 shadow">
+        <FileDrop />
+        <FileInfoCard :file-info="fileInfo" />
+
+        <div v-if="fileInfo" class="card bg-base-100 shadow">
           <div class="card-body">
-            <h2 class="card-title">Actions</h2>
             <div class="card-actions">
               <button
                 class="btn btn-primary btn-sm"
-                :disabled="!backendReady"
-                @click="checkHealth"
+                :disabled="!backendReady || processing"
+                @click="processSelectedFile"
               >
-                Health Check
+                {{ processing ? "Processing..." : "Process File" }}
               </button>
             </div>
           </div>
         </div>
 
-        <!-- File drop -->
-        <FileDrop />
-
-        <!-- Progress -->
         <ProgressBar :progress="progress" />
-
-        <!-- Log panel -->
         <LogPanel />
       </div>
     </main>
 
     <!-- Footer -->
     <footer class="footer footer-center p-2 bg-base-100 text-base-content text-xs">
-      <p>
-        Backend:
-        <span :class="backendReady ? 'text-success' : 'text-warning'">
-          {{ backendReady ? "Online" : "Offline" }}
-        </span>
-        <span class="mx-2">|</span>
-        Last API: {{ lastApiResult }}
-      </p>
+      <p>PyWebVue File Tool Example - Drop files to inspect metadata and simulate processing</p>
     </footer>
   </div>
 </template>

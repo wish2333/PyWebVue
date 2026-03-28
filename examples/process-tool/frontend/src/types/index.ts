@@ -1,12 +1,9 @@
 /**
  * TypeScript types mirroring the Python ErrCode constants and Result class.
- *
- * ErrCode values must match src/pywebvue/result.py exactly.
  */
 
 /** Error codes matching Python ErrCode class. */
 export const ErrCode = {
-  // 00: General
   OK: 0,
   UNKNOWN: 1,
   PARAM_INVALID: 2,
@@ -14,7 +11,6 @@ export const ErrCode = {
   TIMEOUT: 4,
   INTERNAL_ERROR: 5,
 
-  // 01: File system
   FILE_NOT_FOUND: 1001,
   FILE_READ_ERROR: 1002,
   FILE_WRITE_ERROR: 1003,
@@ -22,14 +18,12 @@ export const ErrCode = {
   FILE_TOO_LARGE: 1005,
   PATH_NOT_ACCESSIBLE: 1006,
 
-  // 02: Process management
   PROCESS_START_FAILED: 2001,
   PROCESS_ALREADY_RUNNING: 2002,
   PROCESS_NOT_RUNNING: 2003,
   PROCESS_TIMEOUT: 2004,
   PROCESS_KILLED: 2005,
 
-  // 03: Network / communication
   API_CALL_FAILED: 3001,
   API_NOT_READY: 3002,
 } as const;
@@ -55,13 +49,6 @@ export interface LogEntry {
   class_name?: string;
 }
 
-/** Progress update payload. */
-export interface ProgressPayload {
-  current: number;
-  total: number;
-  label?: string;
-}
-
 /** Toast message options. */
 export interface ToastOptions {
   id: number;
@@ -70,12 +57,12 @@ export interface ToastOptions {
   duration?: number;
 }
 
-/** Column definition for DataTable. */
-export interface ColumnDef {
-  key: string;
-  label: string;
-  width?: string;
-}
-
 /** Status badge state. */
 export type StatusState = "idle" | "running" | "paused" | "error" | "done";
+
+/** Process status data from get_status. */
+export interface ProcessStatus {
+  state: string;
+  pid: number | null;
+  timeout_remaining: number | null;
+}

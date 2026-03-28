@@ -83,7 +83,7 @@ function levelClass(level: string): string {
 
       <div
         ref="logContainer"
-        class="mockup-code bg-base-200 text-xs max-h-48 overflow-y-auto"
+        class="mockup-code bg-base-200 text-xs max-h-64 overflow-y-auto"
       >
         <div v-if="filteredLogs.length === 0" class="text-base-content/40 p-2">
           No logs yet.
