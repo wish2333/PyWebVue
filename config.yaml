@@ -1,0 +1,26 @@
+app:
+  name: "pywebvue-test"
+  title: "PyWebVue Test"
+  width: 900
+  height: 650
+  min_size: [600, 400]
+  resizable: true
+  icon: ""
+  singleton: false
+  centered: true
+  theme: "light"
+
+  dev:
+    enabled: false
+    vite_port: 5173
+    debug: false
+
+logging:
+  level: INFO
+  console: true
+  to_frontend: true
+  file: ""
+  max_lines: 1000
+
+process:
+  default_timeout: 300

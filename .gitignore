@@ -171,3 +171,4 @@ cython_debug/
 # Claude Code
 runCC-GLM.bat
 runCC-OR.bat
+.claude

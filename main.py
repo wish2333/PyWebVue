@@ -1,6 +1,4 @@
-def main():
-    print("Hello from pywebvue-framework!")
+from pywebvue import App
 
-
-if __name__ == "__main__":
-    main()
+app = App(config="config.yaml")
+app.run()
