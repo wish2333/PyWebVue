@@ -149,14 +149,14 @@ bun dev
 
 # Terminal 2: Start the app (auto-detects Vite)
 cd my_app
-uv run python main.py
+uv run main.py
 ```
 
 **Option B: Auto-start Vite (single terminal)**
 
 ```bash
 cd my_app
-uv run python main.py --with-vite
+uv run main.py --with-vite
 ```
 
 This starts Vite in the background, waits for it to be ready, then opens the window.
@@ -170,7 +170,7 @@ cd my_app/frontend
 bun run build        # Outputs to ../dist/
 
 cd ..
-uv run python main.py   # Loads dist/index.html
+uv run main.py   # Loads dist/index.html
 ```
 
 ### How Mode Selection Works
@@ -693,7 +693,7 @@ A file processing tool that demonstrates:
 cd examples/file-tool
 uv sync
 cd frontend && bun install && cd ..
-uv run python main.py
+uv run main.py  --with-vite
 ```
 
 Try: drag a file onto the window, view its metadata, click "Process File" to see progress.
@@ -712,7 +712,7 @@ A subprocess management tool that demonstrates:
 cd examples/process-tool
 uv sync
 cd frontend && bun install && cd ..
-uv run python main.py
+uv run main.py  --with-vite
 ```
 
 Try: enter a command like `python -c "for i in range(10): print(f'line {i}'); import time; time.sleep(0.5)"`, click Start, then try Pause/Resume/Stop.

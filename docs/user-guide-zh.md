@@ -149,14 +149,14 @@ bun dev
 
 # 终端 2：启动应用（自动检测 Vite）
 cd my_app
-uv run python main.py
+uv run main.py
 ```
 
 **选项 B：自动启动 Vite（单终端）**
 
 ```bash
 cd my_app
-uv run python main.py --with-vite
+uv run main.py --with-vite
 ```
 
 这将在后台启动 Vite，等待其就绪，然后打开窗口。
@@ -170,7 +170,7 @@ cd my_app/frontend
 bun run build        # 输出到 ../dist/
 
 cd ..
-uv run python main.py   # 加载 dist/index.html
+uv run main.py   # 加载 dist/index.html
 ```
 
 ### 模式选择原理
@@ -693,7 +693,7 @@ uv add --dev pyinstaller
 cd examples/file-tool
 uv sync
 cd frontend && bun install && cd ..
-uv run python main.py
+uv run main.py  --with-vite
 ```
 
 尝试：将文件拖入窗口，查看其元数据，点击 "Process File" 查看进度。
@@ -712,7 +712,7 @@ uv run python main.py
 cd examples/process-tool
 uv sync
 cd frontend && bun install && cd ..
-uv run python main.py
+uv run main.py  --with-vite
 ```
 
 尝试：输入类似 `python -c "for i in range(10): print(f'line {i}'); import time; time.sleep(0.5)"` 的命令，点击 Start，然后尝试 Pause/Resume/Stop。
