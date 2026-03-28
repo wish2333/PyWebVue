@@ -172,3 +172,6 @@ cython_debug/
 runCC-GLM.bat
 runCC-OR.bat
 .claude
+
+# Test
+tests-dev

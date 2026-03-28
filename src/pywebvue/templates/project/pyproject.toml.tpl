@@ -14,6 +14,14 @@ dependencies = [
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.hatch.build.targets.wheel]
+packages = ["."]
+
+# [tool.uv.sources]
+# For local development without publishing to PyPI, reference the framework
+# from a local path (adjust the path to point to your pywebvue-framework repo):
+# pywebvue-framework = { path = "../pywebvue-framework" }
+
 [dependency-groups]
 dev = [
     "pyinstaller>=6.0",
