@@ -26,8 +26,3 @@ packages = ["."]
 dev = [
     "pyinstaller>=6.0",
 ]
-
-[tool.uv.scripts]
-dev = "python main.py --with-vite"
-build-frontend = "cd frontend && bun run build"
-build-app = "pyinstaller {{PROJECT_NAME}}.spec"
