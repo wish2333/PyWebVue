@@ -45,8 +45,7 @@ class Bridge:
             return
 
         payload = json.dumps(data, ensure_ascii=False) if data is not None else "null"
-        js = f"document.dispatchEvent(new CustomEvent('pywebvue:{event}', {{detail: {payload}, bubbles:       
-         + true}}))"
+        js = f"document.dispatchEvent(new CustomEvent('pywebvue:{event}', {{detail: {payload}, bubbles: true}}))"
         try:
             self._window.evaluate_js(js)
         except Exception:
