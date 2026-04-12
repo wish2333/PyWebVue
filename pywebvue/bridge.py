@@ -3,8 +3,14 @@
 from __future__ import annotations
 
 import functools
+import itertools
+import json
+import logging
+import queue
 import threading
 from typing import Any, Callable
+
+logger = logging.getLogger(__name__)
 
 
 def expose(func: Callable[..., Any]) -> Callable[..., Any]:
@@ -30,26 +36,149 @@ class Bridge:
 
     Subclass this and decorate public methods with ``@expose``.
     Use ``self._emit(event_name, data)`` to push events to the frontend.
+
+    Thread safety:
+        ``_emit`` can be called from any thread. Events are queued and
+        flushed on the main thread via a periodic JS timer (``_tick``).
+
+    Main-thread task execution:
+        Use ``register_handler(name, handler)`` to register handlers,
+        then ``run_on_main_thread(name, args)`` from background threads.
     """
 
     def __init__(self) -> None:
         self._window = None
         self._drop_lock = threading.Lock()
         self._dropped_paths: list[str] = []
+        self._event_queue: queue.Queue[tuple[str, Any]] = queue.Queue()
+
+        # Task execution: handler registry + task queue
+        self._handlers: dict[str, Callable[[Any], Any]] = {}
+        self._task_queue: queue.Queue[tuple[str, str, Any]] = queue.Queue()
+        self._pending_results: dict[str, queue.Queue[tuple[bool, Any]]] = {}
+        self._cancelled_tasks: set[str] = set()
+        self._task_lock = threading.Lock()
+        self._task_counter = itertools.count(1)
 
     def _emit(self, event: str, data: Any = None) -> None:
-        """Dispatch a ``CustomEvent`` named ``pywebvue:{event}`` to the frontend."""
-        import json
+        """Thread-safe: queue an event for main-thread delivery."""
+        self._event_queue.put((event, data))
 
+    def _flush_events(self) -> None:
+        """Drain the event queue and dispatch via evaluate_js."""
         if self._window is None:
+            while True:
+                try:
+                    self._event_queue.get_nowait()
+                except queue.Empty:
+                    break
             return
 
-        payload = json.dumps(data, ensure_ascii=False) if data is not None else "null"
-        js = f"document.dispatchEvent(new CustomEvent('pywebvue:{event}', {{detail: {payload}, bubbles: true}}))"
+        while True:
+            try:
+                event, data = self._event_queue.get_nowait()
+            except queue.Empty:
+                break
+
+            payload = json.dumps(data, ensure_ascii=False) if data is not None else "null"
+            js = (
+                f"document.dispatchEvent(new CustomEvent('pywebvue:{event}', "
+                f"{{detail: {payload}, bubbles: true}}))"
+            )
+            try:
+                self._window.evaluate_js(js)
+            except Exception:
+                logger.debug("evaluate_js failed, marking window as closed")
+                while True:
+                    try:
+                        self._event_queue.get_nowait()
+                    except queue.Empty:
+                        break
+                self._window = None
+                break
+
+    @expose
+    def _tick(self) -> dict[str, Any]:
+        """Process queued events and execute one pending task.
+
+        Called periodically by a JS timer (``setInterval``).
+        Runs on the main thread, making ``evaluate_js`` calls safe on Windows.
+        """
+        self._flush_events()
+        self._execute_next_task()
+        return {"success": True}
+
+    def _execute_next_task(self) -> None:
+        """Execute at most one pending task from the queue."""
         try:
-            self._window.evaluate_js(js)
-        except Exception:
-            pass
+            task_id, name, args = self._task_queue.get_nowait()
+        except queue.Empty:
+            return
+
+        handler = self._handlers.get(name)
+        if handler is None:
+            self._deliver_result(task_id, False, f"Unknown handler: {name}")
+            return
+
+        # Skip tasks whose caller has already timed out.
+        with self._task_lock:
+            if task_id in self._cancelled_tasks:
+                self._cancelled_tasks.discard(task_id)
+                return
+
+        try:
+            result = handler(args)
+            self._deliver_result(task_id, True, result)
+        except Exception as e:
+            logger.debug("Handler '%s' failed: %s", name, e)
+            self._deliver_result(task_id, False, str(e))
+
+    def _deliver_result(self, task_id: str, success: bool, result: Any) -> None:
+        """Put a task result into the caller's result queue."""
+        with self._task_lock:
+            result_q = self._pending_results.get(task_id)
+        if result_q is not None:
+            result_q.put((success, result))
+
+    def register_handler(self, name: str, handler: Callable[[Any], Any]) -> None:
+        """Register a named handler for main-thread task execution.
+
+        Handlers are called on the main thread when scheduled via
+        ``run_on_main_thread(name, args)``.
+        """
+        self._handlers[name] = handler
+
+    def run_on_main_thread(
+        self, name: str, args: Any = None, timeout: float = 30.0
+    ) -> Any:
+        """Schedule a named handler on the main thread and block until completion.
+
+        Thread-safe: callable from background threads.
+        Raises TimeoutError if the task exceeds *timeout* seconds.
+        Raises RuntimeError if the handler raises or is not registered.
+        """
+        task_id = str(next(self._task_counter))
+        result_queue: queue.Queue[tuple[bool, Any]] = queue.Queue()
+
+        with self._task_lock:
+            self._pending_results[task_id] = result_queue
+
+        self._task_queue.put((task_id, name, args))
+
+        try:
+            success, result = result_queue.get(timeout=timeout)
+            if not success:
+                raise RuntimeError(f"Task '{name}' failed: {result}")
+            return result
+        except queue.Empty:
+            with self._task_lock:
+                self._cancelled_tasks.add(task_id)
+            raise TimeoutError(
+                f"Task '{name}' (id={task_id}) timed out after {timeout}s"
+            )
+        finally:
+            with self._task_lock:
+                self._pending_results.pop(task_id, None)
 
     def _on_drop(self, event: dict) -> None:
         """Handle native file drag-and-drop events from pywebview."""
@@ -63,6 +192,7 @@ class Bridge:
             with self._drop_lock:
                 self._dropped_paths.extend(paths)
 
+    @expose
     def get_dropped_files(self) -> dict[str, Any]:
         """Return file paths from the most recent drop event and clear the buffer."""
         with self._drop_lock:

@@ -52,6 +52,24 @@ pywebview auto-selects the best engine per platform:
 
 The spec excludes unused GUI frameworks (PyQt, PySide, tkinter) to reduce bundle size.
 
+### Windows C++ Extensions
+
+If your project uses C++ extensions (e.g., ONNX Runtime, sherpa-onnx) that share
+DLLs with WebView2's Chromium engine, note:
+
+- DLL load order matters: if ONNX Runtime DLLs are in the same directory as the
+  executable, Windows may load the wrong MSVC runtime.
+- Use the ``on_start`` callback to preload native libraries before WebView2
+  initializes:
+
+```python
+App(api, on_start=lambda: preload_native_libs())
+```
+
+- Or import the native library before ``from pywebvue import App``.
+- Add native extension DLLs to the ``hiddenimports`` or ``datas`` section in
+  ``app.spec`` if they are not auto-detected.
+
 ---
 
 ## Android (Buildozer)
