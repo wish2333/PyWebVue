@@ -49,7 +49,7 @@ if (res.success) { /* use res.data */ }
 ### Push events from Python to JS
 
 ```python
-# In a Bridge method or background thread:
+# In a Bridge method or background thread (thread-safe):
 self._emit("my_event", {"status": "done"})
 
 # Via App instance (from outside Bridge):
@@ -121,14 +121,17 @@ Built-in: native file paths captured via `Bridge.get_dropped_files()`.
 ```python
 from pywebvue import App, Bridge, expose
 
-# App(bridge, *, title, width, height, min_size, frontend_dir, dev_url)
+# App(bridge, *, title, width, height, min_size, frontend_dir, dev_url,
+#     tick_interval=50, on_start=None)
 # App.run(dev=None, *, debug=None)
 # App.emit(event, data=None)
 # App.dev -> bool (True when not frozen)
 
 # class MyApi(Bridge):
 #     @expose def method(self, ...) -> dict
-#     self._emit(event, data)
+#     self._emit(event, data)              # thread-safe event push
+#     self.register_handler(name, handler)  # register main-thread handler
+#     self.run_on_main_thread(name, args, timeout=30)  # schedule on main thread
 #     self.get_dropped_files() -> {"success": True, "data": [...paths]}
 ```
 

@@ -80,6 +80,18 @@ if __name__ == "__main__":
     app.run()  # auto-detect: dev when not frozen, prod when frozen
 ```
 
+`App()` constructor options:
+
+| Param | Default | Description |
+|---|---|---|
+| `bridge` | -- | Your `Bridge` subclass instance |
+| `title` | `"App"` | Window title |
+| `width` / `height` | `800` / `600` | Window size in pixels |
+| `frontend_dir` | `"frontend_dist"` | Built frontend directory |
+| `dev_url` | `"http://localhost:5173"` | Vite dev server URL |
+| `tick_interval` | `50` | JS timer interval (ms) for event/task processing |
+| `on_start` | `None` | Callback before window creation (for DLL preloading) |
+
 `App.run()` behavior:
 - `dev=True` (default when not frozen) -- connects to `localhost:5173`
 - `dev=False` (default when frozen) -- loads `{frontend_dir}/index.html` from disk
@@ -128,6 +140,60 @@ Then call from Vue:
 
 ```ts
 const res = await call<string>("new_method", "hello")
+```
+
+## Thread Safety
+
+### Event emission from background threads
+
+``_emit()`` is thread-safe. It queues events internally; a JS timer flushes
+them on the main thread. This is essential on Windows where WebView2 requires
+``evaluate_js`` to be called from the main thread.
+
+```python
+import threading
+
+def worker(app: App):
+    while True:
+        time.sleep(1)
+        app.emit("progress", {"percent": 50})  # safe from any thread
+
+threading.Thread(target=worker, args=(app,), daemon=True).start()
+```
+
+### Main-thread task execution
+
+Some C++ extensions (e.g., ONNX Runtime, sherpa-onnx) must be initialized
+on the main thread. Use ``register_handler`` + ``run_on_main_thread``:
+
+```python
+class MyApi(Bridge):
+    def __init__(self):
+        super().__init__()
+        self.register_handler("init_recognizer", self._init_recognizer)
+
+    def _init_recognizer(self, args):
+        # Runs on the main thread -- safe for C++ extensions
+        return sherpa_onnx.OnlineRecognizer.from_paraformer(args)
+
+    def start_recognition(self):
+        # From a background thread:
+        recognizer = self.run_on_main_thread("init_recognizer", config_path)
+```
+
+### Windows C++ extension integration
+
+If your project uses C++ extensions that share DLLs with WebView2 (e.g.,
+ONNX Runtime), preload them before WebView2 initializes:
+
+```python
+# Option 1: Import before pywebvue (recommended)
+import sherpa_onnx  # preload DLLs first
+
+from pywebvue import App, Bridge, expose
+
+# Option 2: Use on_start callback
+App(api, on_start=lambda: preload_native_libs())
 ```
 
 ## Frontend Structure

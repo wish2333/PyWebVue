@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Any, Callable
 
 import webview
 
@@ -50,13 +49,11 @@ class App:
         bridge: Bridge,
         *,
         title: str = "App",
-        width: int = 800,
-        height: int = 600,
+        width: int = 1200,
+        height: int = 960,
         min_size: tuple[int, int] = (600, 400),
         frontend_dir: str = "frontend_dist",
         dev_url: str = "http://localhost:5173",
-        tick_interval: int = 50,
-        on_start: Callable[[], None] | None = None,
     ) -> None:
         self._bridge = bridge
         self._title = title
@@ -65,15 +62,13 @@ class App:
         self._min_size = min_size
         self._frontend_dir = frontend_dir
         self._dev_url = dev_url
-        self._tick_interval = tick_interval
-        self._on_start = on_start
 
     @property
     def dev(self) -> bool:
-        """True when running in development mode (not frozen)."""
+        """True when running inside PyInstaller bundle."""
         return not getattr(sys, "frozen", False)
 
-    def emit(self, event: str, data: Any = None) -> None:
+    def emit(self, event: str, data=None) -> None:
         """Push an event to the frontend. See :meth:`Bridge._emit`."""
         self._bridge._emit(event, data)
 
@@ -86,9 +81,6 @@ class App:
             debug: Open developer tools. ``True`` / ``False`` / ``None``
                    (default: True when not frozen).
         """
-        if self._on_start is not None:
-            self._on_start()
-
         is_dev = dev if dev is not None else self.dev
         show_debug = debug if debug is not None else self.dev
 
@@ -109,13 +101,13 @@ class App:
 
         self._bridge._window = window
 
-        # Set up drag-and-drop and the tick timer.
-        self._setup_bridge(window)
+        # Set up native file drag-and-drop.
+        self._setup_drag_drop(window)
 
         webview.start(debug=show_debug)
 
-    def _setup_bridge(self, window) -> None:
-        """Register a drop handler and start the tick timer."""
+    def _setup_drag_drop(self, window) -> None:
+        """Register a drop handler and start the event flush timer."""
 
         def on_loaded() -> None:
             from webview.dom import DOMEventHandler
@@ -124,11 +116,26 @@ class App:
             handler = DOMEventHandler(self._bridge._on_drop, prevent_default=True)
             doc.on("drop", handler)
 
+            # Start a periodic timer that flushes queued events from
+            # background threads to the frontend via evaluate_js.
+            # This keeps evaluate_js on the main thread (required by
+            # WebView2/COM on Windows).
             window.evaluate_js(
-                f"setInterval(function() {{"
-                f"  try {{ window.pywebview.api._tick(); }}"
-                f"  catch(e) {{ console.error('pywebvue._tick error:', e); }}"
-                f"}}, {self._tick_interval});"
+                "setInterval(function() {"
+                "  try { window.pywebview.api.flush_events(); }"
+                "  catch(e) { console.error('flush_events error:', e); }"
+                "}, 50);"
             )
+
+            # Also start task executor that runs functions on the main thread
+            # (required for thread-unsafe C++ extensions like ONNX Runtime).
+            # Run less frequently (100ms) to reduce log spam.
+            window.evaluate_js(
+                "setInterval(function() {"
+                "  try { window.pywebview.api.execute_task(); }"
+                "  catch(e) { console.error('execute_task exception:', e); }"
+                "}, 100);"
+            )
+            print("DEBUG: Task executor timers started")  # This goes to server console
 
         window.events.loaded += on_loaded
