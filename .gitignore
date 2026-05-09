@@ -173,9 +173,8 @@ node_modules/
 bun.lock
 
 # Claude Code
-runCC-GLM.bat
-runCC-OR.bat
-.claude/
+runCC-*
+.claude/settings.local.json
 
 # Build
 frontend_dist/

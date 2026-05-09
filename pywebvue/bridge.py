@@ -7,10 +7,14 @@ import itertools
 import json
 import logging
 import queue
+import re
 import threading
+import warnings
 from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
+
+_EVENT_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
 
 
 def expose(func: Callable[..., Any]) -> Callable[..., Any]:
@@ -18,7 +22,8 @@ def expose(func: Callable[..., Any]) -> Callable[..., Any]:
 
     Exposed methods should return ``{"success": True, "data": ...}``.
     On unhandled exception, the decorator returns
-    ``{"success": False, "error": "..."}`` instead of crashing.
+    ``{"success": False, "error": "...", "code": "INTERNAL_ERROR"}``.
+    In production mode (default), error details are hidden from the frontend.
     """
 
     @functools.wraps(func)
@@ -26,7 +31,13 @@ def expose(func: Callable[..., Any]) -> Callable[..., Any]:
         try:
             return func(*args, **kwargs)
         except Exception as exc:
-            return {"success": False, "error": str(exc)}
+            logger.exception("Unhandled bridge exception in %s", func.__name__)
+            bridge = args[0] if args and isinstance(args[0], Bridge) else None
+            if bridge is not None and bridge._debug:
+                error_msg = str(exc)
+            else:
+                error_msg = "Internal error"
+            return {"success": False, "error": error_msg, "code": "INTERNAL_ERROR"}
 
     return wrapper
 
@@ -39,15 +50,16 @@ class Bridge:
 
     Thread safety:
         ``_emit`` can be called from any thread. Events are queued and
-        flushed on the main thread via a periodic JS timer (``_tick``).
+        flushed via a periodic JS timer calling ``tick()``.
 
-    Main-thread task execution:
+    Bridge-thread task execution:
         Use ``register_handler(name, handler)`` to register handlers,
-        then ``run_on_main_thread(name, args)`` from background threads.
+        then ``run_on_bridge(name, args)`` from background threads.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, debug: bool = False) -> None:
         self._window = None
+        self._debug = debug
         self._drop_lock = threading.Lock()
         self._dropped_paths: list[str] = []
         self._event_queue: queue.Queue[tuple[str, Any]] = queue.Queue()
@@ -62,6 +74,8 @@ class Bridge:
 
     def _emit(self, event: str, data: Any = None) -> None:
         """Thread-safe: queue an event for main-thread delivery."""
+        if not _EVENT_RE.fullmatch(event):
+            raise ValueError(f"Invalid event name: {event!r}")
         self._event_queue.put((event, data))
 
     def _flush_events(self) -> None:
@@ -81,8 +95,10 @@ class Bridge:
                 break
 
             payload = json.dumps(data, ensure_ascii=False) if data is not None else "null"
+            event_name = json.dumps(f"pywebvue:{event}", ensure_ascii=False)
             js = (
-                f"document.dispatchEvent(new CustomEvent('pywebvue:{event}', "
+                f"document.dispatchEvent("
+                f"new CustomEvent({event_name}, "
                 f"{{detail: {payload}, bubbles: true}}))"
             )
             try:
@@ -98,11 +114,10 @@ class Bridge:
                 break
 
     @expose
-    def _tick(self) -> dict[str, Any]:
+    def tick(self) -> dict[str, Any]:
         """Process queued events and execute one pending task.
 
-        Called periodically by a JS timer (``setInterval``).
-        Runs on the main thread, making ``evaluate_js`` calls safe on Windows.
+        Called periodically by a JS timer (recursive ``setTimeout``).
         """
         self._flush_events()
         self._execute_next_task()
@@ -141,17 +156,16 @@ class Bridge:
             result_q.put((success, result))
 
     def register_handler(self, name: str, handler: Callable[[Any], Any]) -> None:
-        """Register a named handler for main-thread task execution.
+        """Register a named handler for bridge-thread task execution.
 
-        Handlers are called on the main thread when scheduled via
-        ``run_on_main_thread(name, args)``.
+        Handlers are called when scheduled via ``run_on_bridge(name, args)``.
         """
         self._handlers[name] = handler
 
-    def run_on_main_thread(
+    def run_on_bridge(
         self, name: str, args: Any = None, timeout: float = 30.0
     ) -> Any:
-        """Schedule a named handler on the main thread and block until completion.
+        """Schedule a named handler and block until completion.
 
         Thread-safe: callable from background threads.
         Raises TimeoutError if the task exceeds *timeout* seconds.
@@ -199,3 +213,14 @@ class Bridge:
             paths = list(self._dropped_paths)
             self._dropped_paths.clear()
         return {"success": True, "data": paths}
+
+    def run_on_main_thread(
+        self, name: str, args: Any = None, timeout: float = 30.0
+    ) -> Any:
+        """Deprecated: use ``run_on_bridge`` instead."""
+        warnings.warn(
+            "run_on_main_thread() is deprecated, use run_on_bridge() instead",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.run_on_bridge(name, args, timeout)

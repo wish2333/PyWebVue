@@ -84,13 +84,13 @@ class App:
             dev:   URL source. ``True`` = Vite dev server, ``False`` = disk,
                    ``None`` = auto-detect (dev when not frozen).
             debug: Open developer tools. ``True`` / ``False`` / ``None``
-                   (default: True when not frozen).
+                   (default: False). Pass ``True`` to enable DevTools.
         """
         if self._on_start is not None:
             self._on_start()
 
         is_dev = dev if dev is not None else self.dev
-        show_debug = debug if debug is not None else self.dev
+        show_debug = bool(debug)
 
         if is_dev:
             url = self._dev_url
@@ -125,10 +125,11 @@ class App:
             doc.on("drop", handler)
 
             window.evaluate_js(
-                f"setInterval(function() {{"
-                f"  try {{ window.pywebview.api._tick(); }}"
-                f"  catch(e) {{ console.error('pywebvue._tick error:', e); }}"
-                f"}}, {self._tick_interval});"
+                f"(function loop() {{"
+                f"  window.pywebview.api.tick()"
+                f"    .catch(e => console.error('pywebvue.tick error:', e))"
+                f"    .finally(() => setTimeout(loop, {self._tick_interval}));"
+                f"}})();"
             )
 
         window.events.loaded += on_loaded

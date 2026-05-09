@@ -436,6 +436,12 @@ def _build_frontend() -> None:
 # ========== desktop ==========
 
 def _build_desktop(onefile: bool = False) -> None:
+    dist_dir = PROJECT_ROOT / "frontend_dist"
+    if not dist_dir.is_dir() or not (dist_dir / "index.html").exists():
+        _error(
+            "frontend_dist not found or incomplete. "
+            "Run 'cd frontend && bun run build' first."
+        )
     if onefile:
         _build_onefile()
     else:
