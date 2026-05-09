@@ -130,11 +130,21 @@ def _setup_frontend(frontend_dir: Path) -> str:
 
 def _start_vite(frontend_dir: Path, pm: str) -> None:
     """Start Vite dev server in background and wait for it to be ready."""
+    import time
+    import urllib.request
+
     _info(f"[3] Starting Vite dev server ({pm})...")
     _spawn_bg([pm, "run", "dev"], cwd=frontend_dir)
-    import time
-    time.sleep(2)
-    _info("    Vite should be running at http://localhost:5173")
+
+    deadline = time.monotonic() + 20
+    while time.monotonic() < deadline:
+        try:
+            urllib.request.urlopen("http://localhost:5173", timeout=1)
+            _info("    Vite ready at http://localhost:5173")
+            return
+        except Exception:
+            time.sleep(0.5)
+    _error("Vite dev server failed to start on port 5173 within 20s")
 
 
 def _start_app(env_extra: dict[str, str] | None = None) -> None:
